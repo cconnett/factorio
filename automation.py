@@ -34,7 +34,13 @@ def blueprint_json(model):
     })
   for x in range(-1, WIDTH):
     for y in range(HEIGHT):
-      if (s := model.eval(structure(x, y))) in (BELT, INSERTER):
+      s = model.eval(structure(x, y))
+      move_dir = DIR_TO_FACTORIO[model.eval(direction(x, y))]
+      if s in (BELT, INSERTER):
+        if s == INSERTER:
+          # Inserters' `direction` property is backwards from what you think it
+          # should be. Flip it around.
+          move_dir = (move_dir + 4) % 8
         entities.append({
             'entity_number': next(entity_number),
             'name': 'express-transport-belt' if s == BELT else 'fast-inserter',
@@ -42,17 +48,29 @@ def blueprint_json(model):
                 'x': x - WIDTH / 2,
                 'y': y - HEIGHT / 2
             },
-            'direction': dir_to_factorio[model.eval(direction(x, y))]
+            'direction': move_dir,
         })
 
   return template
 
+
 def print_resources(m):
-  resource_glyphs = {COPPER: 'C', IRON: 'I', COG: '*', NO_RESOURCE: ' ', RED_SCIENCE: 'R'}
-  for x in range(WIDTH):
-    for y in range(HEIGHT):
-      print(resource_glyphs[m.eval(resource(x,y))], end='')
+  resource_glyphs = {
+      COPPER: 'C',
+      IRON: 'I',
+      COG: '*',
+      NO_RESOURCE: ' ',
+      RED_SCIENCE: 'R'
+  }
+  for y in range(HEIGHT):
+    for x in range(WIDTH):
+      #print(resource_glyphs[m.eval(resource(x, y))], end='')
+      if m.eval(resource(x, y)) == NO_RESOURCE:
+        print('  ', end = ' ')
+      else:
+        print('%2d' % m.eval(distance(x, y)).as_long(), end=' ')
     print()
+
 
 s = z3.Solver()
 (DirectionSort, (
@@ -92,14 +110,19 @@ s = z3.Solver()
             'OTHER_STRUCTURE',
         ])
 
+DIR_TO_FACTORIO = {UP: 0, RIGHT: 2, DOWN: 4, LEFT: 6}
+OPPOSITE_DIRECTION = {UP: DOWN, RIGHT: LEFT, DOWN: UP, LEFT: RIGHT}
+
 WIDTH = 10
 HEIGHT = 10
 
-dir_to_factorio = {UP: 0, RIGHT: 2, DOWN: 4, LEFT: 6}
 resource = z3.Function('resource', z3.IntSort(), z3.IntSort(), ResourceSort)
 structure = z3.Function('structure', z3.IntSort(), z3.IntSort(), StructureSort)
 direction = z3.Function('direction', z3.IntSort(), z3.IntSort(), DirectionSort)
+# It's possible that is_input is just a special case of distance to source, but
+# I don't feel like working that out just yet.
 is_input = z3.Function('is_input', z3.IntSort(), z3.IntSort(), z3.BoolSort())
+distance = z3.Function('distance', z3.IntSort(), z3.IntSort(), z3.IntSort())
 machine_output = z3.Function('machine_output', z3.IntSort(), z3.IntSort(),
                              ResourceSort)
 
@@ -159,11 +182,12 @@ directional_offsets = [
     (UP, (0, 1)),
     (RIGHT, (-1, 0)),
 ]
-opposite_direction = {UP: DOWN, RIGHT: LEFT, DOWN: UP, LEFT: RIGHT}
 # Apply resource transfer rules.
 for x in range(WIDTH):
   for y in range(HEIGHT):
-    s.add(z3.Implies(structure(x,y) == INSERTER, resource(x,y) == NO_RESOURCE))
+    s.add(z3.Implies(
+        structure(x, y) == INSERTER,
+        resource(x, y) == NO_RESOURCE))
     # `or` together necessary and sufficient conditions for a coordinate to
     # have a resource. The first such condition, `is_input`, is how we bless
     # certain squares as being able to have resources from nothing. It could
@@ -178,13 +202,15 @@ for x in range(WIDTH):
               resource(x, y) == resource(x + x_offset, y + y_offset),
               structure(x + x_offset, y + y_offset) == BELT,
               direction(x + x_offset, y + y_offset) == neighbor_direction,
-            direction(x, y) != opposite_direction[neighbor_direction]))
+              # direction(x, y) != OPPOSITE_DIRECTION[neighbor_direction],
+              distance(x + x_offset, y + y_offset) + 1 == distance(x, y)))
       # or fed by an inserter on this neighbor.
       cases.append(
           z3.And(
               resource(x, y) == resource(x + 2 * x_offset, y + 2 * y_offset),
               structure(x + x_offset, y + y_offset) == INSERTER,
-              direction(x + x_offset, y + y_offset) == neighbor_direction))
+              direction(x + x_offset, y + y_offset) == neighbor_direction,
+              distance(x + 2 * x_offset, y + 2 * y_offset) + 1 == distance(x, y)))
     s.add(z3.Or(cases))
 
 s.add(resource(-1, 5) == COPPER)
@@ -199,6 +225,9 @@ s.add(is_input(-1, 6))
 
 for x in range(-2, WIDTH + 2):
   for y in range(-2, HEIGHT + 2):
+    s.add(is_input(x, y) == (distance(x, y) == 0))
+    # s.add(structure(x,y) != INSERTER)
+    s.add(distance(x,y) >= 0)
     if not 0 <= x < WIDTH or not 0 <= y < HEIGHT:
       if (x, y) not in [(-1, 5), (-1, 6)]:
         s.add(resource(x, y) == NO_RESOURCE)
@@ -232,12 +261,13 @@ for a in assemblers:
           z3.And(p.y - (a.y + a.height - 1) <= 3, a.y - p.y <= 3) for p in power
       ]))
 
-print('check')
-if s.check() == z3.sat:
-  m = s.model()
-  print(m)
-  print_resources(m)
-  # import pdb; pdb.set_trace()
-  print(blueprint.encode(blueprint_json(m)).decode())
-else:
-  print('unsat')
+## print('check')
+## if s.check() == z3.sat:
+##   m = s.model()
+##   print(m)
+##   print_resources(m)
+##   # import pdb; pdb.set_trace()
+##   print(blueprint.encode(blueprint_json(m)).decode())
+## else:
+##   print('unsat')
+print(s.to_smt2())
