@@ -3,8 +3,6 @@ import fractions
 import pysmt.shortcuts as s
 import pysmt.typing as t
 
-s.get_env().enable_infix_notation = True
-
 
 @dataclasses.dataclass
 class Belt:
@@ -14,6 +12,20 @@ class Belt:
   @property
   def flux(self):
     return s.Min(self.rho, self.v)
+
+
+def get_model_or_print_ucore(formula):
+  m = s.get_model(formula)
+  if not m:
+    print('unsat')
+    from pysmt.rewritings import conjunctive_partition
+    conj = conjunctive_partition(s.And(formula))
+    ucore = s.get_unsat_core(conj)
+    print("UNSAT-Core size '%d'" % len(ucore))
+    for f in ucore:
+      print(f.serialize())
+    return
+  return m
 
 
 def domain(belt):
@@ -123,19 +135,7 @@ def check_balancer_flow(junctions, upstream_densities, downstream_velocities):
   for y, v in enumerate(downstream_velocities):
     formula.append(s.Equals(belts[y][-1].v, s.Real(v)))
 
-  # Crunch time!
-  m = s.get_model(s.And(formula))
-  if not m:
-    print('unsat')
-    from pysmt.rewritings import conjunctive_partition
-    conj = conjunctive_partition(s.And(formula))
-    ucore = s.get_unsat_core(conj)
-    print("UNSAT-Core size '%d'" % len(ucore))
-    for f in ucore:
-      print(f.serialize())
-
-    return
-
+  m = get_model_or_print_ucore(s.And(formula))
   # Print output diagram.
   junctions_by_x = [[] for x in range(length + 1)]
   for (x, y1, y2) in junctions:
@@ -168,6 +168,33 @@ def check_balancer_flow(junctions, upstream_densities, downstream_velocities):
         f'{float(1-(actual_throughput/theoretical_throughput)):.0%} slowdown :('
     )
   print('∎')
+
+
+def prove_utu(junctions):
+  width = max(max(y1 for _, y1, _ in junctions),
+              max(y2 for _, _, y2 in junctions)) + 1
+  length = max(x for x, _, _ in junctions)
+  formula, belts = balancer_flow_formula(junctions, width, length)
+
+  supply = s.Plus(beltway[0].rho for beltway in belts)
+  demand = s.Plus(beltway[-1].v for beltway in belts)
+  max_theoretical_throughput = s.Min(supply, demand)
+  actual_throughput = s.Plus(beltway[-1].flux for beltway in belts)
+  ## counter_example_formula = s.And(
+  ##     s.And(formula),
+  ##     s.Or(s.Not(s.Equals(beltway[-1].flux)), s.Not(s.Equals(max_theoretical_throughput, actual_throughput))))
+  counter_example_formula = s.And(
+      s.And(formula),
+      s.Not(s.Equals(max_theoretical_throughput, actual_throughput)))
+  m = s.get_model(counter_example_formula)
+  if not m:
+    print("It's UTU!")
+    return
+  inputs = tuple(m.get_py_value(beltway[0].rho) for beltway in belts)
+  outputs = tuple(m.get_py_value(beltway[-1].v) for beltway in belts)
+  print(f'Input lane densities: ({", ".join(map(str, inputs))})')
+  print(f'Output lane velocities: ({", ".join(map(str, outputs))})')
+  check_balancer_flow(junctions, inputs, outputs)
 
 
 examples = [
@@ -217,43 +244,74 @@ examples = [
         #8
         [(1, 0, 1), (2, 1, 2), (3, 0, 1), (4, 1, 2), (5, 0, 1)],
         (1, 1, 0),
-        (1, 1, 0)),
+        (1, 1, 1)),
     (
-        #8a - non-UTU
+        #9 - non-UTU
         [(1, 0, 1), (2, 1, 2), (3, 0, 1), (4, 1, 2)],
         (1, 1, 0),
         (0, 1, 1)),
+    (
+        #10 - smallest UTU 4-belt.
+        [
+            (1, 0, 1),
+            (1, 2, 3),
+            (2, 1, 2),
+            (2, 0, 3),
+            (3, 0, 1),
+            (3, 2, 3),
+        ],
+        (1, 1, 1, 0),
+        (1, 1, 0, 1),
+    ),
+    (
+        #11 - example that does not converge (quickly) with an iterative method
+        #(In[26] in original notebook).
+        [
+            (1, 0, 1),
+            (2, 1, 2),
+            (3, 2, 3),
+            (4, 1, 2),
+            (5, 0, 1),
+            (6, 1, 2),
+            (7, 2, 3),
+            (8, 1, 2),
+            (9, 0, 1),
+        ],
+        (1, 1, 1, 0),
+        (0, 1, 1, 1),
+    ),
+    (
+      #12 - claims to be the smallest 5-belt UTU
+        [
+            (1, 0, 1),
+            (1, 2, 3),
+            (2, 1, 2),
+            (2, 3, 4),
+            (3, 4, 0),
+            (3, 2, 3),
+            (4, 0, 1),
+            (4, 2, 3),
+            (5, 1, 2),
+            (5, 3, 4),
+            (6, 4, 0),
+            (6, 2, 3),
+            (7, 0, 1),
+            (7, 2, 3),
+            (8, 1, 2),
+            (8, 3, 4),
+            (9, 4, 0),
+            (9, 2, 3),
+        ],
+        (1, 0, 1, 0, 1),
+        (0, 1, 0, 1, 0),
+    ),
 ]
 
 if __name__ == '__main__':
-  ## for i, example in enumerate(examples):
-  ##   header = f'Example {i+1}'
-  ##   print(header)
-  ##   print('=' * len(header))
-  ##   balancer_flow(*example)
-  junctions = (
-      (1, 0, 1),
-      (1, 2, 3),
-      (2, 1, 2),
-      (2, 0, 3),
-      (3, 0, 1),
-      (3, 2, 3),
-  )
-  upstream_densities = (1, 1, 1, 0)
-  downstream_velocities = (1, 1, 0, 1)
-  junctions = (
-      (1, 0, 1),
-      (2, 1, 2),
-      (3, 2, 3),
-      (4, 1, 2),
-      (5, 0, 1),
-      (6, 1, 2),
-      (7, 2, 3),
-      (8, 1, 2),
-      (9, 0, 1),
-  )
-
-  upstream_densities = (1, 1, 1, 0)
-  downstream_velocities = (0, 1, 1, 1)
-
-  check_balancer_flow(junctions, upstream_densities, downstream_velocities)
+  for i, example in enumerate(examples[9:10]):
+    junctions, upstream_densities, downstream_velocities = example
+    header = f'Example {i+1}'
+    print(header)
+    print('=' * len(header))
+    #check_balancer_flow(junctions, upstream_densities, downstream_velocities)
+    prove_utu(junctions)
