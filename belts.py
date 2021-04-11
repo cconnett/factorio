@@ -19,23 +19,15 @@ class Belt:
 def domain(belt):
   yield 0 <= belt.rho <= 1
   yield 0 <= belt.v <= 1
-  # yield s.LT(belt.rho, s.Real(1)).Implies(s.Equals(belt.v, s.Real(1)))
-  # yield s.LT(belt.v, s.Real(1)).Implies(s.Equals(belt.rho, s.Real(1)))
 
 
-def balancer_flow(junctions, upstream_densities, downstream_velocities):
-  upstream_densities = [fractions.Fraction(d) for d in upstream_densities]
-  downstream_velocities = [fractions.Fraction(v) for v in downstream_velocities]
-  n = len(upstream_densities)
-  length = max(x for x, _, _ in junctions)
-  assert n == len(downstream_velocities)
-
+def balancer_flow_formula(junctions, width, length):
   formula = []
   belts = [[
       Belt(s.Symbol(f'b{i}[{x}].rho', t.REAL), s.Symbol(f'b{i}[{x}].v', t.REAL))
       for x in range(length + 1)
   ]
-           for i in range(n)]
+           for i in range(width)]
   for beltway in belts:
     for belt in beltway:
       formula.extend(domain(belt))
@@ -68,8 +60,8 @@ def balancer_flow(junctions, upstream_densities, downstream_velocities):
 
     # This formula is most accurate for assignment > velocity (density will
     # equal 1), but it doesn't change the flux calculation just toset rho to
-    # the velocity when velocity limits flow. (So you could replace the Ite by
-    # v_out and be OK.)
+    # the velocity when velocity limits flow. (So you should be able to replace
+    # the Ite by v_out and be OK.)
     formula.append(
         s.Equals(
             belts[y1][out].rho,
@@ -83,21 +75,21 @@ def balancer_flow(junctions, upstream_densities, downstream_velocities):
 
     output_v = s.Plus(belts[y1][out].v, belts[y2][out].v)
     half_output = s.Div(output_v, s.Real(2))
-    empty_demand_of_1 = s.Max(s.Real(0), s.Minus(half_output,
-                                                 belts[y1][inn].rho))
-    empty_demand_of_2 = s.Max(s.Real(0), s.Minus(half_output,
-                                                 belts[y2][inn].rho))
+    unused_density_from_1 = s.Max(s.Real(0),
+                                  s.Minus(half_output, belts[y1][inn].rho))
+    unused_density_from_2 = s.Max(s.Real(0),
+                                  s.Minus(half_output, belts[y2][inn].rho))
 
     formula.append(
         s.Equals(
             belts[y1][inn].v,
-            s.Ite(half_output + empty_demand_of_2 > belts[y1][inn].rho,
-                  s.Real(1), half_output + empty_demand_of_2)))
+            s.Ite(half_output + unused_density_from_2 > belts[y1][inn].rho,
+                  s.Real(1), half_output + unused_density_from_2)))
     formula.append(
         s.Equals(
             belts[y2][inn].v,
-            s.Ite(half_output + empty_demand_of_1 > belts[y2][inn].rho,
-                  s.Real(1), half_output + empty_demand_of_1)))
+            s.Ite(half_output + unused_density_from_1 > belts[y2][inn].rho,
+                  s.Real(1), half_output + unused_density_from_1)))
     # Conservation of flux at each junction.
     input_flux = s.Plus(belts[y1][inn].flux, belts[y2][inn].flux)
     output_flux = s.Plus(belts[y1][out].flux, belts[y2][out].flux)
@@ -107,7 +99,7 @@ def balancer_flow(junctions, upstream_densities, downstream_velocities):
   # values must remain equal.
   thru_belts = [
       list(
-          set(range(n)) - {y1 for y1, y2 in junctions_by_x[x]} -
+          set(range(width)) - {y1 for y1, y2 in junctions_by_x[x]} -
           {y2 for y1, y2 in junctions_by_x[x]}) for x in range(length + 1)
   ]
   for x, thru in enumerate(thru_belts[1:]):
@@ -115,11 +107,21 @@ def balancer_flow(junctions, upstream_densities, downstream_velocities):
       formula.append(s.Equals(belts[y][x].rho, belts[y][x + 1].rho))
       formula.append(s.Equals(belts[y][x].v, belts[y][x + 1].v))
 
+  return formula, belts
+
+
+def check_balancer_flow(junctions, upstream_densities, downstream_velocities):
+  assert len(upstream_densities) == len(downstream_velocities)
+  width = len(upstream_densities)
+  length = max(x for x, _, _ in junctions)
+
+  formula, belts = balancer_flow_formula(junctions, width, length)
+
   # Set initial conditions.
   for y, rho in enumerate(upstream_densities):
     formula.append(s.Equals(belts[y][0].rho, s.Real(rho)))
   for y, v in enumerate(downstream_velocities):
-    formula.append(s.Equals(belts[y][length].v, s.Real(v)))
+    formula.append(s.Equals(belts[y][-1].v, s.Real(v)))
 
   # Crunch time!
   m = s.get_model(s.And(formula))
@@ -135,10 +137,13 @@ def balancer_flow(junctions, upstream_densities, downstream_velocities):
     return
 
   # Print output diagram.
+  junctions_by_x = [[] for x in range(length + 1)]
+  for (x, y1, y2) in junctions:
+    junctions_by_x[x].append((y1, y2))
   for y, beltway in enumerate(belts):
     print(f'{upstream_densities[y]}>>>', end=':')
     for x, belt in enumerate(beltway):
-      
+
       letter_map = {}
       if x < len(beltway) - 1:
         for (y1, y2), letter in zip(junctions_by_x[x + 1], 'abcdefghjkmn'):
@@ -159,7 +164,9 @@ def balancer_flow(junctions, upstream_densities, downstream_velocities):
   actual_throughput = sum(m.get_py_value(beltway[-1].flux) for beltway in belts)
   print(f'Actual Q: {actual_throughput}')
   if theoretical_throughput != actual_throughput:
-    print(f'{float(1-(actual_throughput/theoretical_throughput)):.0%} slowdown :(')
+    print(
+        f'{float(1-(actual_throughput/theoretical_throughput)):.0%} slowdown :('
+    )
   print('∎')
 
 
@@ -219,8 +226,34 @@ examples = [
 ]
 
 if __name__ == '__main__':
-  for i, example in enumerate(examples):
-    header = f'Example {i+1}'
-    print(header)
-    print('=' * len(header))
-    balancer_flow(*example)
+  ## for i, example in enumerate(examples):
+  ##   header = f'Example {i+1}'
+  ##   print(header)
+  ##   print('=' * len(header))
+  ##   balancer_flow(*example)
+  junctions = (
+      (1, 0, 1),
+      (1, 2, 3),
+      (2, 1, 2),
+      (2, 0, 3),
+      (3, 0, 1),
+      (3, 2, 3),
+  )
+  upstream_densities = (1, 1, 1, 0)
+  downstream_velocities = (1, 1, 0, 1)
+  junctions = (
+      (1, 0, 1),
+      (2, 1, 2),
+      (3, 2, 3),
+      (4, 1, 2),
+      (5, 0, 1),
+      (6, 1, 2),
+      (7, 2, 3),
+      (8, 1, 2),
+      (9, 0, 1),
+  )
+
+  upstream_densities = (1, 1, 1, 0)
+  downstream_velocities = (0, 1, 1, 1)
+
+  check_balancer_flow(junctions, upstream_densities, downstream_velocities)
