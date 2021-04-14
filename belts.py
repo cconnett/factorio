@@ -212,6 +212,7 @@ def prove_properties(junctions):
     if not solver.solve():
       print("It's throughput-unlimited!")
     else:
+      print("It's throughput-limited; here's an example:")
       m = solver.get_model()
       inputs = tuple(m.get_py_value(beltway[0].rho) for beltway in belts)
       outputs = tuple(m.get_py_value(beltway[-1].v) for beltway in belts)
@@ -226,7 +227,7 @@ def prove_properties(junctions):
     if not solver.solve():
       print("It's input-balanced!")
     else:
-      print("It's input-limited; here's an example:")
+      print("It's input-imbalanced; here's an example:")
       m = solver.get_model()
       inputs = tuple(m.get_py_value(beltway[0].rho) for beltway in belts)
       outputs = tuple(m.get_py_value(beltway[-1].v) for beltway in belts)
@@ -240,6 +241,7 @@ def prove_properties(junctions):
     if solver.solve:
       print("It's output-balanced!")
     else:
+      print("It's output-imbalanced; here's an example:")
       m = solver.get_model()
       inputs = tuple(m.get_py_value(beltway[0].rho) for beltway in belts)
       outputs = tuple(m.get_py_value(beltway[-1].v) for beltway in belts)
