@@ -145,7 +145,7 @@ def check_balancer_flow(junctions, upstream_densities, downstream_velocities):
   rho_width = max(
       len(str(m.get_py_value(belt.rho)))
       for beltway in belts
-      for belt in beltway[1:-1])
+      for belt in beltway)
   v_width = max(
       len(str(m.get_py_value(belt.v)))
       for beltway in belts
@@ -160,7 +160,7 @@ def check_balancer_flow(junctions, upstream_densities, downstream_velocities):
           assert y2 not in letter_map
           letter_map[y1] = letter
           letter_map[y2] = letter
-      belt_status = f'{str(m.get_py_value(belt.rho)):{rho_width}s}@{str(m.get_py_value(belt.v)):{v_width}s}'
+      belt_status = f'{str(m.get_py_value(belt.rho)):>{rho_width}s}@{str(m.get_py_value(belt.v)):{v_width}s}'
       print(f' >>> {belt_status} >>>', end=f' {letter_map.get(y,"|")}')
     end_flux = m.get_py_value(beltway[-1].flux)
     print(f'> {end_flux}.')
@@ -226,6 +226,7 @@ def prove_properties(junctions):
     if not solver.solve():
       print("It's input-balanced!")
     else:
+      print("It's input-limited; here's an example:")
       m = solver.get_model()
       inputs = tuple(m.get_py_value(beltway[0].rho) for beltway in belts)
       outputs = tuple(m.get_py_value(beltway[-1].v) for beltway in belts)
