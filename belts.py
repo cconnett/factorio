@@ -140,10 +140,19 @@ def check_balancer_flow(junctions, upstream_densities, downstream_velocities):
   junctions_by_x = [[] for x in range(length + 1)]
   for (x, y1, y2) in junctions:
     junctions_by_x[x].append((y1, y2))
+  ud_width = max(len(str(ud)) for ud in upstream_densities)
+  dv_width = max(len(str(dv)) for dv in downstream_velocities)
+  rho_width = max(
+      len(str(m.get_py_value(belt.rho)))
+      for beltway in belts
+      for belt in beltway[1:-1])
+  v_width = max(
+      len(str(m.get_py_value(belt.v)))
+      for beltway in belts
+      for belt in beltway[1:-1])
   for y, beltway in enumerate(belts):
-    print(f'{upstream_densities[y]}>>>', end=':')
+    print(f'{str(upstream_densities[y]):{ud_width}s}>>>', end=':')
     for x, belt in enumerate(beltway):
-
       letter_map = {}
       if x < len(beltway) - 1:
         for (y1, y2), letter in zip(junctions_by_x[x + 1], 'abcdefghjkmn'):
@@ -151,9 +160,8 @@ def check_balancer_flow(junctions, upstream_densities, downstream_velocities):
           assert y2 not in letter_map
           letter_map[y1] = letter
           letter_map[y2] = letter
-
-      print(f' >>>{m.get_value(belt.rho)}@{m.get_value(belt.v)}>>>',
-            end=f' {letter_map.get(y,"|")}')
+      belt_status = f'{str(m.get_py_value(belt.rho)):{rho_width}s}@{str(m.get_py_value(belt.v)):{v_width}s}'
+      print(f' >>> {belt_status} >>>', end=f' {letter_map.get(y,"|")}')
     end_flux = m.get_py_value(beltway[-1].flux)
     print(f'> {end_flux}.')
 
@@ -170,7 +178,7 @@ def check_balancer_flow(junctions, upstream_densities, downstream_velocities):
   print('∎')
 
 
-def prove_utu(junctions):
+def prove_properties(junctions):
   width = max(max(y1 for _, y1, _ in junctions),
               max(y2 for _, _, y2 in junctions)) + 1
   length = max(x for x, _, _ in junctions)
@@ -180,21 +188,63 @@ def prove_utu(junctions):
   demand = s.Plus(beltway[-1].v for beltway in belts)
   max_theoretical_throughput = s.Min(supply, demand)
   actual_throughput = s.Plus(beltway[-1].flux for beltway in belts)
-  ## counter_example_formula = s.And(
-  ##     s.And(formula),
-  ##     s.Or(s.Not(s.Equals(beltway[-1].flux)), s.Not(s.Equals(max_theoretical_throughput, actual_throughput))))
-  counter_example_formula = s.And(
-      s.And(formula),
-      s.Not(s.Equals(max_theoretical_throughput, actual_throughput)))
-  m = s.get_model(counter_example_formula)
-  if not m:
-    print("It's UTU!")
-    return
-  inputs = tuple(m.get_py_value(beltway[0].rho) for beltway in belts)
-  outputs = tuple(m.get_py_value(beltway[-1].v) for beltway in belts)
-  print(f'Input lane densities: ({", ".join(map(str, inputs))})')
-  print(f'Output lane velocities: ({", ".join(map(str, outputs))})')
-  check_balancer_flow(junctions, inputs, outputs)
+
+  fully_balanced_output = []
+  max_flux = s.Max(b[-1].flux for b in belts)
+  for i, b1 in enumerate(belts):
+    fully_balanced_output.append(
+        s.Or(s.Equals(b1[-1].flux, max_flux), s.Equals(b1[-1].flux, b1[-1].v)))
+  fully_balanced_output = s.And(fully_balanced_output)
+
+  fully_balanced_input = []
+  max_flux = s.Max(b[0].flux for b in belts)
+  for i, b1 in enumerate(belts):
+    fully_balanced_input.append(
+        s.Or(s.Equals(b1[0].flux, max_flux), s.Equals(b1[0].flux, b1[0].rho)))
+  fully_balanced_input = s.And(fully_balanced_input)
+
+  with s.Solver() as solver:
+    solver.add_assertion(s.And(formula))
+    solver.push()
+    solver.add_assertion(
+        s.Not(s.Equals(max_theoretical_throughput, actual_throughput)))
+
+    if not solver.solve():
+      print("It's throughput-unlimited!")
+    else:
+      m = solver.get_model()
+      inputs = tuple(m.get_py_value(beltway[0].rho) for beltway in belts)
+      outputs = tuple(m.get_py_value(beltway[-1].v) for beltway in belts)
+      print(f'Input lane densities: ({", ".join(map(str, inputs))})')
+      print(f'Output lane velocities: ({", ".join(map(str, outputs))})')
+      check_balancer_flow(junctions, inputs, outputs)
+
+    solver.pop()
+    solver.push()
+    solver.add_assertion(s.Not(fully_balanced_input))
+
+    if not solver.solve():
+      print("It's input-balanced!")
+    else:
+      m = solver.get_model()
+      inputs = tuple(m.get_py_value(beltway[0].rho) for beltway in belts)
+      outputs = tuple(m.get_py_value(beltway[-1].v) for beltway in belts)
+      print(f'Input lane densities: ({", ".join(map(str, inputs))})')
+      print(f'Output lane velocities: ({", ".join(map(str, outputs))})')
+      check_balancer_flow(junctions, inputs, outputs)
+
+    solver.pop()
+    solver.push()
+    solver.add_assertion(s.Not(fully_balanced_output))
+    if solver.solve:
+      print("It's output-balanced!")
+    else:
+      m = solver.get_model()
+      inputs = tuple(m.get_py_value(beltway[0].rho) for beltway in belts)
+      outputs = tuple(m.get_py_value(beltway[-1].v) for beltway in belts)
+      print(f'Input lane densities: ({", ".join(map(str, inputs))})')
+      print(f'Output lane velocities: ({", ".join(map(str, outputs))})')
+      check_balancer_flow(junctions, inputs, outputs)
 
 
 examples = [
@@ -281,7 +331,7 @@ examples = [
         (0, 1, 1, 1),
     ),
     (
-      #12 - claims to be the smallest 5-belt UTU
+        #12 - claims to be the smallest 5-belt UTU
         [
             (1, 0, 1),
             (1, 2, 3),
@@ -314,4 +364,4 @@ if __name__ == '__main__':
     print(header)
     print('=' * len(header))
     #check_balancer_flow(junctions, upstream_densities, downstream_velocities)
-    prove_utu(junctions)
+    prove_properties(junctions)
